@@ -42,6 +42,9 @@ Options:
                    Valid: peon, peon_fr, peon_pl, peasant, peasant_fr,
                           sc_kerrigan, sc_battlecruiser, ra2_soviet_engineer
   --daemon         Install and load a persistent vox background daemon
+                   WARNING: known upstream bug: daemon ignores voice setting
+                   (always speaks as Chelsie) and is slower than direct
+                   generation (8-9s vs ~6s). Not recommended.
   --doctor         Re-check prerequisites and print diagnostics, no changes
   --help           Show this help and exit
 
@@ -413,6 +416,9 @@ EOF
   step_ok "Daemon installed and loaded ($plist_path)"
   echo "    Note: daemon warm-up may play a short test phrase in the model's" >&2
   echo "    default voice once, the first time it starts." >&2
+  echo "    WARNING: known upstream bug: vox daemon ignores voice setting" >&2
+  echo "    (always Chelsie) and is slower than direct generation" >&2
+  echo "    (8-9s vs ~6s). Not recommended." >&2
   return 0
 }
 

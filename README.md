@@ -26,7 +26,7 @@ cd voxup
 |-------------------|----------|---------------------------------------------------------------------------|
 | `--voice <name>`  | `Ethan`  | Voice to configure. Valid: `Chelsie` (f), `Ethan` (m), `Vivian` (f)       |
 | `--pack <name>`   | none     | Install and set a game sound pack (see valid names below)                |
-| `--daemon`        | off      | Install and load a persistent vox background daemon via launchd          |
+| `--daemon`        | off      | Install and load a persistent vox background daemon via launchd. WARNING: known upstream bug, see Known upstream issues below. Not recommended. |
 | `--doctor`        | off      | Re-check prerequisites and print diagnostics, makes no changes           |
 | `--help`          | -        | Show usage and exit                                                      |
 
@@ -58,6 +58,16 @@ Each step prints one line (`OK`/`X`). Sub-tool noise is redirected to
    `vox daemon _run` (leading underscore). `vox daemon run` does not exist and
    will crash-loop launchd if used in a LaunchAgent. voxup's generated plist
    uses the correct `_run` subcommand.
+
+4. **Daemon ignores the configured voice, and is slower.** When the vox
+   daemon (`vox daemon _run`) is running, `vox speak` requests are routed
+   through it instead of generating directly. The daemon ignores whatever
+   voice was configured and always speaks as the female `Chelsie` speaker of
+   Qwen3-TTS, with no warning. It is also slower than direct generation
+   (roughly 8-9s per utterance vs roughly 6s without the daemon). `--daemon`
+   is kept for anyone who explicitly wants the persistent background process,
+   but it is **not recommended** until this is fixed upstream. voxup prints a
+   warning whenever `--daemon` is used.
 
 ## Uninstall
 
