@@ -1,5 +1,7 @@
 # voxup
 
+[![ci](https://github.com/oleg-koval/voxup/actions/workflows/ci.yml/badge.svg)](https://github.com/oleg-koval/voxup/actions/workflows/ci.yml)
+
 One-command sane setup for `vox` (the `vox` TTS CLI, installed via Homebrew at
 `/opt/homebrew/bin/vox`) on Apple Silicon macOS: a neural English voice,
 optional fun game sound packs, and an optional persistent background daemon.
@@ -7,13 +9,13 @@ optional fun game sound packs, and an optional persistent background daemon.
 ## Quickstart
 
 ```bash
-curl -fsSL <raw-url-placeholder>/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oleg-koval/voxup/main/install.sh | bash
 ```
 
 Or clone and run locally:
 
 ```bash
-git clone <repo-url-placeholder>
+git clone https://github.com/oleg-koval/voxup
 cd voxup
 ./install.sh
 ```
