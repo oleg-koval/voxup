@@ -12,7 +12,10 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: shellcheck
-        run: shellcheck install.sh
+        run: shellcheck install.sh hooks/*.sh tests/*.sh
 
       - name: syntax check
         run: bash -n install.sh
+
+      - name: claude hook tests
+        run: bash tests/test-claude-hook.sh

@@ -27,6 +27,10 @@ cd voxup
 | `--voice <name>`  | `Ethan`  | Voice to configure. Valid: `Chelsie` (f), `Ethan` (m), `Vivian` (f)       |
 | `--pack <name>`   | none     | Install and set a game sound pack (see valid names below)                |
 | `--daemon`        | off      | Install and load a persistent vox background daemon via launchd. WARNING: known upstream bug, see Known upstream issues below. Not recommended. |
+| `--clone <name>`  | none     | Register a voice clone with `vox clone add` and use it as the voice. Needs `--clone-audio`. |
+| `--clone-audio <wav>` | -    | Reference audio for `--clone` (a few clean seconds of speech)            |
+| `--clone-text <text>` | -    | Transcript of the reference audio; improves clone quality                |
+| `--claude`        | off      | Wire vox into Claude Code: register the `vox` MCP server and add a Stop hook that speaks each final reply. See below. |
 | `--doctor`        | off      | Re-check prerequisites and print diagnostics, makes no changes           |
 | `--help`          | -        | Show usage and exit                                                      |
 
@@ -35,6 +39,54 @@ Valid `--pack` names: `peon`, `peon_fr`, `peon_pl`, `peasant`, `peasant_fr`,
 
 Each step prints one line (`OK`/`X`). Sub-tool noise is redirected to
 `/tmp/voxup-install.log`.
+
+## Recommended setup
+
+```bash
+./install.sh --voice Ethan --pack sc_battlecruiser --claude
+```
+
+Qwen3-TTS (`mlx-community/Qwen3-TTS-12Hz-0.6B-Base`, runs locally via
+mlx-audio) with the male Ethan speaker, StarCraft battlecruiser sound pack,
+no daemon, and Claude Code speaking the first line of every reply.
+
+To speak in a cloned voice instead, add a reference clip:
+
+```bash
+./install.sh --clone gandalf --clone-audio ~/voice/gandalf.wav \
+  --clone-text "Exact words spoken in the clip." --claude
+```
+
+Reference clips are personal files and are never stored in this repo.
+
+## Claude Code integration (`--claude`)
+
+`--claude` does two things, both idempotent:
+
+1. Registers the MCP server (`claude mcp add --scope user vox -- vox serve`)
+   unless one named `vox` already exists, so Claude can call `vox_speak`.
+2. Installs `hooks/vox-speak-stop.sh` to `~/.claude/hooks/` and adds it as a
+   `Stop` hook in `~/.claude/settings.json` (existing hooks are kept, a
+   timestamped `settings.json.voxup-bak-*` backup is written first).
+
+When a turn ends, the hook takes the first line of Claude's final reply,
+strips markdown, and speaks it in the background. It never blocks or fails
+the session. With the hook in place you no longer need a "call vox speak
+after every task" line in `CLAUDE.md`; remove it to avoid hearing each
+summary twice.
+
+Tune it with environment variables (set them in the `env` block of
+`settings.json`):
+
+| Variable               | Effect                                                        |
+|------------------------|---------------------------------------------------------------|
+| `VOXUP_SPEAK=0`        | Mute without removing the hook                                |
+| `VOXUP_SPEAK_PATTERN`  | Only speak lines matching this regex, e.g. `^(DONE\|NEEDS-YOU\|BLOCKED):` |
+| `VOXUP_SPEAK_MAX`      | Truncate spoken text (default 200 characters)                 |
+
+Note: the vox MCP server's own instructions tell Claude to speak French by
+default. voxup sets `lang en`; if Claude still answers in French, say
+"always speak English" in your `CLAUDE.md`.
 
 ## Known upstream issues this works around
 
@@ -78,6 +130,11 @@ rm -f ~/Library/LaunchAgents/com.$(id -un).vox-daemon.plist
 
 # reset vox configuration
 vox config reset
+
+# Claude Code: remove the MCP server and the hook
+claude mcp remove vox -s user
+rm -f ~/.claude/hooks/vox-speak-stop.sh
+# then delete the vox-speak-stop.sh entry under hooks.Stop in ~/.claude/settings.json
 ```
 
 Sound pack files installed under
