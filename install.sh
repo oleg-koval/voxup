@@ -12,10 +12,17 @@ LOG_FILE="/tmp/voxup-install.log"
 PACK_MANIFEST_COMMIT="cb09d49adad4e79618e3b599a35974d542ed75a7"
 PACK_BASE_URL="https://raw.githubusercontent.com/PeonPing/peon-ping/${PACK_MANIFEST_COMMIT}/packs"
 VOX_BIN="/opt/homebrew/bin/vox"
+HOOK_URL="https://raw.githubusercontent.com/oleg-koval/voxup/main/hooks/vox-speak-stop.sh"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+HOOK_PATH="$CLAUDE_DIR/hooks/vox-speak-stop.sh"
 
 VOICE="Ethan"
 PACK=""
 DAEMON=0
+CLAUDE=0
+CLONE_NAME=""
+CLONE_AUDIO=""
+CLONE_TEXT=""
 DOCTOR=0
 SHOW_HELP=0
 
@@ -45,6 +52,13 @@ Options:
                    WARNING: known upstream bug: daemon ignores voice setting
                    (always speaks as Chelsie) and is slower than direct
                    generation (8-9s vs ~6s). Not recommended.
+  --clone <name>   Register a voice clone and use it as the voice
+                   (requires --clone-audio; qwen backend)
+  --clone-audio <wav>  Reference audio for --clone (a few clean seconds)
+  --clone-text <text>  Transcript of the reference audio (improves quality)
+  --claude         Wire vox into Claude Code: register the vox MCP server
+                   and add a Stop hook that speaks the first line of every
+                   final reply (see hooks/vox-speak-stop.sh)
   --doctor         Re-check prerequisites and print diagnostics, no changes
   --help           Show this help and exit
 
@@ -98,6 +112,22 @@ parse_args() {
         ;;
       --daemon)
         DAEMON=1
+        shift
+        ;;
+      --clone)
+        CLONE_NAME="$2"
+        shift 2
+        ;;
+      --clone-audio)
+        CLONE_AUDIO="$2"
+        shift 2
+        ;;
+      --clone-text)
+        CLONE_TEXT="$2"
+        shift 2
+        ;;
+      --claude)
+        CLAUDE=1
         shift
         ;;
       --doctor)
@@ -234,7 +264,9 @@ step_configure_voice() {
   local vox
   vox="$(resolve_vox_bin)"
 
-  if ! validate_voice "$VOICE"; then
+  if [ -n "$CLONE_NAME" ]; then
+    VOICE="$CLONE_NAME"
+  elif ! validate_voice "$VOICE"; then
     step_fail "Voice '$VOICE' is not a real Qwen3-TTS-12Hz-0.6B-Base speaker"
     echo "    vox advertises Chelsie/Aidan/Luna/Ryan for the qwen backend, but" >&2
     echo "    only Chelsie (f), Ethan (m), Vivian (f) actually exist. Any other" >&2
@@ -423,6 +455,128 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Step 3b: voice clone (optional). Runs before voice config so the clone
+# name is a valid voice when it is set.
+# ---------------------------------------------------------------------------
+
+step_add_clone() {
+  local vox
+  vox="$(resolve_vox_bin)"
+
+  if [ -z "$CLONE_AUDIO" ] || [ ! -f "$CLONE_AUDIO" ]; then
+    step_fail "Clone '$CLONE_NAME': --clone-audio must point to an existing audio file"
+    exit 1
+  fi
+
+  # Re-running with the same name replaces the clone; a missing clone is fine.
+  "$vox" clone remove "$CLONE_NAME" >>"$LOG_FILE" 2>&1
+
+  if [ -n "$CLONE_TEXT" ]; then
+    if ! "$vox" clone add "$CLONE_NAME" --audio "$CLONE_AUDIO" --text "$CLONE_TEXT" >>"$LOG_FILE" 2>&1; then
+      step_fail "vox clone add $CLONE_NAME failed"
+      exit 1
+    fi
+  elif ! "$vox" clone add "$CLONE_NAME" --audio "$CLONE_AUDIO" >>"$LOG_FILE" 2>&1; then
+    step_fail "vox clone add $CLONE_NAME failed"
+    exit 1
+  fi
+
+  step_ok "Voice clone '$CLONE_NAME' registered ($CLONE_AUDIO)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Step 5b: Claude Code integration (optional)
+# ---------------------------------------------------------------------------
+
+install_hook_script() {
+  local script_dir
+  local local_hook
+
+  mkdir -p "$(dirname "$HOOK_PATH")" 2>>"$LOG_FILE"
+
+  # Prefer the copy next to install.sh (clone checkout); fall back to GitHub
+  # when piped through curl, where there is no sibling file.
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+  local_hook="${VOXUP_HOOK_SRC:-$script_dir/hooks/vox-speak-stop.sh}"
+  if [ -f "$local_hook" ]; then
+    cp "$local_hook" "$HOOK_PATH" 2>>"$LOG_FILE" || return 1
+  else
+    curl -fsSL "$HOOK_URL" -o "$HOOK_PATH" >>"$LOG_FILE" 2>&1 || return 1
+  fi
+
+  chmod +x "$HOOK_PATH" 2>>"$LOG_FILE" || return 1
+  return 0
+}
+
+register_stop_hook() {
+  # Idempotent merge into settings.json: add one Stop hook entry pointing at
+  # HOOK_PATH unless an entry with that command already exists. A timestamped
+  # backup is written before any change.
+  python3 - "$CLAUDE_DIR/settings.json" "$HOOK_PATH" <<'PYEOF' 2>>"$LOG_FILE"
+import json, os, shutil, sys, time
+
+settings_path, hook_path = sys.argv[1], sys.argv[2]
+settings = {}
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+
+stop = settings.setdefault("hooks", {}).setdefault("Stop", [])
+for group in stop:
+    for hook in group.get("hooks", []):
+        if hook.get("command") == hook_path:
+            print("present")
+            sys.exit(0)
+
+if os.path.exists(settings_path):
+    shutil.copy2(settings_path, "%s.voxup-bak-%d" % (settings_path, int(time.time())))
+
+stop.append({"hooks": [{"type": "command", "command": hook_path, "timeout": 10}]})
+os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+tmp = settings_path + ".voxup-tmp"
+with open(tmp, "w") as f:
+    json.dump(settings, f, indent=2)
+    f.write("\n")
+os.replace(tmp, settings_path)
+print("added")
+PYEOF
+  return $?
+}
+
+step_claude() {
+  local vox
+  local result
+  vox="$(resolve_vox_bin)"
+
+  if ! install_hook_script; then
+    step_fail "Claude: failed to install hook script at $HOOK_PATH"
+    exit 1
+  fi
+
+  if ! result="$(register_stop_hook)"; then
+    step_fail "Claude: failed to update $CLAUDE_DIR/settings.json (see $LOG_FILE)"
+    exit 1
+  fi
+  step_ok "Claude Stop hook $result ($HOOK_PATH)"
+
+  if ! command -v claude >/dev/null 2>>"$LOG_FILE"; then
+    step_fail "Claude: 'claude' CLI not found, skipped MCP registration"
+    return 0
+  fi
+  if claude mcp get vox >>"$LOG_FILE" 2>&1; then
+    step_ok "Claude MCP server 'vox' (already registered)"
+    return 0
+  fi
+  if ! claude mcp add --scope user vox -- "$vox" serve >>"$LOG_FILE" 2>&1; then
+    step_fail "Claude: 'claude mcp add vox' failed"
+    exit 1
+  fi
+  step_ok "Claude MCP server 'vox' registered (user scope)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Step 6: verify
 # ---------------------------------------------------------------------------
 
@@ -455,6 +609,11 @@ print_summary() {
     echo "  daemon:  installed and loaded"
   else
     echo "  daemon:  not installed"
+  fi
+  if [ "$CLAUDE" -eq 1 ]; then
+    echo "  claude:  Stop hook + MCP server"
+  else
+    echo "  claude:  not wired"
   fi
   echo "  log:     $LOG_FILE"
   return 0
@@ -520,6 +679,16 @@ run_doctor() {
     step_ok "vox daemon not installed (optional, plist absent)"
   fi
 
+  if [ -n "$vox" ]; then
+    echo "    voice clones: $("$vox" clone list 2>/dev/null | cut -d: -f1 | tr '\n' ' ')"
+  fi
+
+  if [ -x "$HOOK_PATH" ] && grep -q "$HOOK_PATH" "$CLAUDE_DIR/settings.json" 2>/dev/null; then
+    step_ok "Claude Stop hook installed ($HOOK_PATH)"
+  else
+    step_ok "Claude Stop hook not installed (optional, use --claude)"
+  fi
+
   return 0
 }
 
@@ -545,6 +714,11 @@ main() {
 
   step_preflight
   step_mlx_audio
+
+  if [ -n "$CLONE_NAME" ]; then
+    step_add_clone
+  fi
+
   step_configure_voice
 
   if [ -n "$PACK" ]; then
@@ -553,6 +727,10 @@ main() {
 
   if [ "$DAEMON" -eq 1 ]; then
     step_install_daemon
+  fi
+
+  if [ "$CLAUDE" -eq 1 ]; then
+    step_claude
   fi
 
   step_verify
